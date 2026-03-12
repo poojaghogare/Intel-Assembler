@@ -9,7 +9,7 @@ It reads Intel syntax assembly (.asm) files and produces machine code output alo
 
 BUILD
 
-    gcc -o assembler program5.c
+    gcc -o assembler program.c
 
 
 USAGE
@@ -94,7 +94,7 @@ input file (hello.asm):
 
 run:
 
-    gcc -o assembler program5.c
+    gcc -o assembler program.c
     ./assembler hello.asm
     cat output.lst
 
