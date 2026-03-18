@@ -1,59 +1,20 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
-#include <stdint.h>
+#include "program.h"
 
-#define COMMA ','
-#define TAB '\t'
-#define SPACE ' '
-#define COLON ':'
-#define NEXTLINE '\n'
-#define MAX_SYM 256
-#define MAX_IR 2048
-#define MAX_LST 4096
-
-typedef struct
-{
-	int line_no;
-	uint32_t addr;
-	uint8_t bytes[16];
-	int len;
-	int has_addr;     
-	int unresolved;     
-	char src[512];
-} LstEntry;
-
-LstEntry lst[MAX_LST];
-int lst_count = 0;
+LstEntry     lst[MAX_LST];
+int          lst_count = 0;
 
 unsigned int lc_data = 0;
-unsigned int lc_bss = 0;
+unsigned int lc_bss  = 0;
 unsigned int lc_text = 0;
 
-typedef enum
-{
-	SEC_NONE,
-	SEC_DATA,
-	SEC_BSS,
-	SEC_TEXT
-} Section;
+Section      current_section = SEC_NONE;
 
-Section current_section = SEC_NONE;
+Symbol       symtab[MAX_SYM];
+int          symcount = 0;
+char         label[32] = {0};
 
-typedef struct
-{
-	char name[32];
-	Section sec;
-	int addr;
-	int size;
-	int valid; 
-} Symbol;
-
-Symbol symtab[MAX_SYM];
-
-int symcount = 0;
-char label[32] = {0};
+IR           ir_list[MAX_IR];
+int          ir_count = 0;
 
 void write_lst(const char *fname)
 {
@@ -72,18 +33,15 @@ void write_lst(const char *fname)
 			continue;
 		}
 
-		
-		char bytefield[64] = {0}; 
+		char bytefield[64] = {0};
 		int bf = 0;
 		int show = e->len < 9 ? e->len : 9;
 
 		if (e->unresolved && e->len >= 4)
 		{
-			
 			int pre = e->len - 4;
 			for (int j = 0; j < pre && bf < 62; j++)
 				bf += sprintf(bytefield + bf, "%02X", e->bytes[j]);
-			
 			if (bf + 10 <= 62)
 			{
 				bytefield[bf++] = '[';
@@ -98,7 +56,6 @@ void write_lst(const char *fname)
 				bf += sprintf(bytefield + bf, "%02X", e->bytes[j]);
 		}
 
-		
 		fprintf(fp, "%6d %08X %-18s  %s\n",
 		        e->line_no, e->addr, bytefield, e->src);
 
@@ -148,7 +105,7 @@ int add_symbol(const char *name, Section sec, unsigned int addr, unsigned int si
 		if (!strcmp(symtab[i].name, name))
 		{
 			if (symtab[i].valid == 0)
-				return 0; 
+				return 0;
 
 			printf("Duplicate symbol: %s\n", name);
 			symtab[i].valid = 0;
@@ -158,9 +115,9 @@ int add_symbol(const char *name, Section sec, unsigned int addr, unsigned int si
 
 	strncpy(symtab[symcount].name, name, sizeof(symtab[symcount].name) - 1);
 	symtab[symcount].name[sizeof(symtab[symcount].name) - 1] = '\0';
-	symtab[symcount].sec = sec;
-	symtab[symcount].addr = addr;
-	symtab[symcount].size = size;
+	symtab[symcount].sec   = sec;
+	symtab[symcount].addr  = addr;
+	symtab[symcount].size  = size;
 	symtab[symcount].valid = 1;
 	symcount++;
 	return 1;
@@ -177,260 +134,11 @@ void reject_symbol(const char *name)
 		}
 	}
 
-	// add as permanently rejected
 	strncpy(symtab[symcount].name, name, sizeof(symtab[symcount].name) - 1);
 	symtab[symcount].name[sizeof(symtab[symcount].name) - 1] = '\0';
 	symtab[symcount].valid = 0;
 	symcount++;
 }
-
-typedef enum
-{
-	T_UNKNOWN,
-	T_IDENTIFIER,
-	T_LABEL,
-	T_MNEMONIC,
-	T_REGISTER,
-	T_DIRECTIVE,
-	T_STRING,
-	T_OPERATOR,
-	T_IMMEDIATE,
-	T_MEMORY,
-	T_COMMENT,
-	T_END
-} TokenType;
-
-typedef enum
-{
-	INS_UNKNOWN,
-	INS_MOV,
-	INS_ADD,
-	INS_SUB,
-	INS_JMP,
-	INS_XOR,
-	INS_CMP,
-	INS_INC,
-	INS_DEC,
-	INS_PUSH,
-	INS_POP,
-	INS_LEA,
-	INS_CALL,
-	INS_RET,
-	INS_NOP,
-	INS_JCC,    /* all conditional jumps: je, jne, jg, jge, jl, jle, etc. */
-} InstructionType;
-
-typedef enum
-{
-	DIR_NONE,
-	DIR_SECTION,
-	DIR_DB,
-	DIR_DW,
-	DIR_DD,
-	DIR_DQ,
-	DIR_RESB,
-	DIR_RESW,
-	DIR_RESD,
-	DIR_RESQ,
-	DIR_GLOBAL,
-	DIR_EXTERN
-} DirectiveType;
-
-typedef enum
-{
-	REG_EAX = 0,
-	REG_ECX = 1,
-	REG_EDX = 2,
-	REG_EBX = 3,
-	REG_ESP = 4,
-	REG_EBP = 5,
-	REG_ESI = 6,
-	REG_EDI = 7,
-	REG_INVALID = -1
-} RegCode;
-
-typedef enum
-{
-	INS_NONE,
-	INS_ONE,
-	INS_TWO,
-} InstrArgCount;
-
-typedef enum
-{
-	OP_NONE,
-	OP_REG,
-	OP_IMM,
-	OP_LABEL,
-	OP_MEM
-} OperandType;
-
-
-typedef enum
-{
-	O_SQ_BRACKET,
-	C_SQ_BRACKET,
-	PLUS,
-	MINUS,
-	MULTIPLICATION,
-	UNKNOWN
-} OPERATOR;
-
-typedef struct
-{
-	unsigned int has_modrm;
-	unsigned int has_sib;
-	unsigned has_disp;
-	unsigned has_imm;
-} EncodingInfo;
-
-typedef struct
-{
-	InstructionType type;
-	InstrArgCount argc;
-	OperandType operand_types[3];
-	EncodingInfo encoding;
-} Instruction;
-
-typedef enum
-{
-	CC_O = 0x0,
-	CC_NO = 0x1,
-	CC_B = 0x2,
-	CC_AE = 0x3,
-	CC_E = 0x4,
-	CC_NE = 0x5,
-	CC_BE = 0x6,
-	CC_A = 0x7,
-	CC_S = 0x8,
-	CC_NS = 0x9,
-	CC_P = 0xA,
-	CC_NP = 0xB,
-	CC_L = 0xC,
-	CC_GE = 0xD,
-	CC_LE = 0xE,
-	CC_G = 0xF
-} CondCode;
-
-typedef struct
-{
-	uint8_t rm : 3;
-	uint8_t reg : 3;
-	uint8_t mod : 2;
-} ModRM;
-
-typedef struct
-{
-	uint8_t base : 3;
-	uint8_t index : 3;
-	uint8_t scale : 2;
-} SIB;
-
-typedef struct
-{
-	InstructionType instr;
-	InstrArgCount argcnt;
-} INSTR_MAP;
-
-typedef struct
-{
-	char name[256];
-	TokenType type;
-} TOKEN;
-
-typedef struct
-{
-	OperandType type; // OP_REG, OP_MEM, OP_IMM, OP_LABEL
-
-	RegCode reg; // OP_REG
-	int32_t imm; // OP_IMM
-
-	char label[32]; // OP_LABEL
-
-	RegCode base;  // base register
-	RegCode index; // index register or REG_INVALID
-	int scale;	   // 1,2,4,8
-
-	int has_disp; // IMPORTANT
-	int32_t disp; // displacement
-} Operand;
-
-typedef struct
-{
-	InstructionType ins; // instruction enum
-	char mnemonic[16];	 // mnemonic string
-
-	Operand op1;
-	Operand op2;
-
-	uint32_t addr; // address in .text
-	uint32_t size; // encoded size (exact, from pass1 encode)
-
-	uint32_t line_no;	// source line number
-	char src_line[200]; // original source line
-
-	uint8_t  enc[16];   // encoded bytes (valid if enc_len > 0)
-	int      enc_len;   // 0 = not yet encoded / label operand pending
-
-} IR;
-
-IR ir_list[MAX_IR];
-int ir_count = 0;
-
-/* ---------- tokenizer / lexer ---------- */
-void filterline(char *line);
-TOKEN get_next_token(const char *line, unsigned int *i);
-TokenType get_token_type(const char *word);
-
-/* ---------- section / directive ---------- */
-Section get_section_type(const char *name);
-int handle_section(char *name);
-DirectiveType get_directive_type(const char *word);
-int validate_data_directive(void);
-int validate_bss_directive(DirectiveType dir);
-int directiveSize(DirectiveType d);
-
-/* ---------- symbol table ---------- */
-int add_symbol(const char *name, Section sec, unsigned int addr, unsigned int size);
-void reject_symbol(const char *name);
-
-/* ---------- instruction / operand ---------- */
-InstructionType get_instruction_type(const char *word);
-InstrArgCount get_instruction_argcount(InstructionType instr);
-RegCode get_register_code(const char *reg);
-int is_mnemonic(const char *word);
-int is_immediate(const char *word);
-int is_memory_operand(const char *op);
-void parse_operand(const char *s, Operand *op);
-
-/* ---------- encoding helpers ---------- */
-int fits_imm8(int32_t v);
-static inline int fits_rel8(int32_t d);
-uint8_t scale_bits(int scale);
-int needs_sib(Operand *op);
-uint8_t encode_modrm(uint8_t mod, uint8_t reg, uint8_t rm);
-uint8_t encode_sib(uint8_t scale, uint8_t index, uint8_t base);
-
-/* ---------- encoders ---------- */
-int encode_rm(uint8_t *out, Operand *rmop, uint8_t regfield);
-int encode_imm_rm(uint8_t *out, uint8_t opcode8, uint8_t opcode32, uint8_t subcode, Operand *rm, int32_t imm);
-
-int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, Operand *op1, Operand *op2, uint32_t pc);
-
-/* ---------- jumps ---------- */
-int is_jcc(const char *m);
-int get_cond_code(const char *m);
-
-/* ---------- size / estimation ---------- */
-int estimate_text_size(InstructionType ins);
-int calc_db_size(const char *line, unsigned int start);
-int calc_numeric_data_size(const char *line, unsigned int start, int elem_size);
-int string_byte_size(const char *s);
-
-/* ---------- passes ---------- */
-void tokenize_line(FILE *fp);
-int emit_data(FILE *fp, uint8_t *data);
-int pass2_emit(uint8_t *);
 
 int is_jcc(const char *m)
 {
@@ -502,11 +210,6 @@ int get_cond_code(const char *m)
 	if (!strcmp(m, "jbe"))
 		return CC_BE;
 	return -1;
-}
-
-static inline int fits_rel8(int32_t d)
-{
-	return (d >= -128 && d <= 127);
 }
 
 int fits_imm8(int32_t v)
@@ -594,7 +297,6 @@ RegCode get_register_code(const char *reg)
 	return REG_INVALID;
 }
 
-
 DirectiveType get_directive_type(const char *word)
 {
 	if (!strcmp(word, "section"))
@@ -645,7 +347,6 @@ int directiveSize(DirectiveType d)
 	}
 }
 
-
 InstrArgCount get_instruction_argcount(InstructionType instr)
 {
 	for (int i = 0; instruction_table[i].instr != INS_UNKNOWN; i++)
@@ -686,21 +387,18 @@ int encode_rm(uint8_t *out, Operand *rm, uint8_t reg)
 {
     int len = 0;
 
-    /* REG */
     if (rm->type == OP_REG)
     {
         out[len++] = encode_modrm(3, reg, rm->reg);
         return len;
     }
 
-    /* force [ebp] → disp8=0 */
     if (rm->base == REG_EBP && !rm->has_disp)
     {
         rm->has_disp = 1;
         rm->disp = 0;
     }
 
-    /* [disp32] */
     if (rm->type == OP_MEM &&
         rm->base == REG_INVALID &&
         rm->index == REG_INVALID &&
@@ -756,19 +454,16 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 	case INS_MOV:
 		if (op1->type == OP_REG && op2->type == OP_REG)
 		{
-			/* 89 /r  — MOV r/m32, r32  (NASM preferred direction) */
 			out[len++] = 0x89;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
 		else if (op1->type == OP_REG && op2->type == OP_MEM)
 		{
-			/* 8B /r  — MOV r32, r/m32 */
 			out[len++] = 0x8B;
 			len += encode_rm(out + len, op2, op1->reg);
 		}
 		else if (op1->type == OP_MEM && op2->type == OP_REG)
 		{
-			/* 89 /r  — MOV r/m32, r32 */
 			out[len++] = 0x89;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
@@ -781,7 +476,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		else if (op1->type == OP_MEM && op2->type == OP_IMM)
 		{
 			out[len++] = 0xC7;
-			len += encode_rm(out + len, op1, 0); // /0
+			len += encode_rm(out + len, op1, 0);
 			memcpy(out + len, &op2->imm, 4);
 			len += 4;
 		}
@@ -795,19 +490,16 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		}
 		else if (op1->type == OP_REG && op2->type == OP_REG)
 		{
-			/* 01 /r  — ADD r/m32, r32 */
 			out[len++] = 0x01;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
 		else if (op1->type == OP_MEM && op2->type == OP_REG)
 		{
-			/* 01 /r  — ADD r/m32, r32 (memory destination) */
 			out[len++] = 0x01;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
 		else
 		{
-			/* 03 /r  — ADD r32, r/m32 (register destination, memory source) */
 			out[len++] = 0x03;
 			len += encode_rm(out + len, op2, op1->reg);
 		}
@@ -820,19 +512,16 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		}
 		else if (op1->type == OP_REG && op2->type == OP_REG)
 		{
-			/* 29 /r  — SUB r/m32, r32 */
 			out[len++] = 0x29;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
 		else if (op1->type == OP_MEM && op2->type == OP_REG)
 		{
-			/* 29 /r  — SUB r/m32, r32 (memory destination) */
 			out[len++] = 0x29;
 			len += encode_rm(out + len, op1, op2->reg);
 		}
 		else
 		{
-			/* 2B /r  — SUB r32, r/m32 (register destination, memory source) */
 			out[len++] = 0x2B;
 			len += encode_rm(out + len, op2, op1->reg);
 		}
@@ -863,7 +552,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		}
 		else
 		{
-			out[len++] = 0xE9; 
+			out[len++] = 0xE9;
 			memcpy(out + len, &op1->imm, 4);
 			len += 4;
 		}
@@ -910,7 +599,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		else if (op1->type == OP_MEM)
 		{
 			out[len++] = 0xFF;
-			len += encode_rm(out + len, op1, 6); // /6
+			len += encode_rm(out + len, op1, 6);
 		}
 		break;
 	case INS_POP:
@@ -921,7 +610,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		else if (op1->type == OP_MEM)
 		{
 			out[len++] = 0x8F;
-			len += encode_rm(out + len, op1, 0); // /0
+			len += encode_rm(out + len, op1, 0);
 		}
 		break;
 	case INS_INC:
@@ -932,7 +621,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		else if (op1->type == OP_MEM)
 		{
 			out[len++] = 0xFF;
-			len += encode_rm(out + len, op1, 0); // /0
+			len += encode_rm(out + len, op1, 0);
 		}
 		break;
 
@@ -944,7 +633,7 @@ int encode_instruction(uint8_t *out, InstructionType ins, const char *mnemonic, 
 		else if (op1->type == OP_MEM)
 		{
 			out[len++] = 0xFF;
-			len += encode_rm(out + len, op1, 1); // /1
+			len += encode_rm(out + len, op1, 1);
 		}
 		break;
 
@@ -1133,33 +822,30 @@ void filterline(char *line)
 		}
 	}
 
-	// remove trailing space
 	if (j > 0 && line[j - 1] == ' ')
 		j--;
 
 	line[j] = '\0';
 }
 
-
 int string_byte_size(const char *s)
 {
 	int size = 0;
 
-	// skip opening quote
 	for (int i = 1; s[i] && s[i] != '"'; i++)
 	{
 		if (s[i] == '\\')
 		{
-			i++; // escape sequence
+			i++;
 			if (!s[i])
 				break;
 
 			switch (s[i])
 			{
-			case 'n':  // \n
-			case 't':  // \t
-			case 'r':  // \r
-			case '\\': // \\"
+			case 'n':
+			case 't':
+			case 'r':
+			case '\\':
 			case '"':  // \"
 			case '0':  // \0
 				size += 1;
@@ -1172,7 +858,7 @@ int string_byte_size(const char *s)
 				break;
 
 			default:
-				size += 1; 
+				size += 1;
 			}
 		}
 		else
@@ -1209,21 +895,21 @@ int calc_db_size(const char *line, unsigned int start)
 
 				switch (line[i])
 				{
-				case 'n':  
-				case 't':  
-				case 'r':  
-				case '\\': 
-				case '"':  
-				case '0':  
+				case 'n':
+				case 't':
+				case 'r':
+				case '\\':
+				case '"':
+				case '0':
 					size += 1;
 					break;
-				case 'x':
+				case 'x': // hex \xNN
 					if (isxdigit(line[i + 1]) && isxdigit(line[i + 2]))
 						i += 2;
 					size += 1;
 					break;
 				default:
-					size += 1; 
+					size += 1;
 				}
 			}
 			else
@@ -1233,7 +919,7 @@ int calc_db_size(const char *line, unsigned int start)
 		}
 		else if (line[i] == ',' || line[i] == ' ' || line[i] == '\t')
 		{
-			i++; 
+			i++;
 			continue;
 		}
 		else if (isdigit(line[i]) || line[i] == '+' || line[i] == '-')
@@ -1340,7 +1026,7 @@ int estimate_text_size(InstructionType ins)
 
 	case INS_INC:
 	case INS_DEC:
-		return 1;  /* 0x40+r / 0x48+r = 1 byte for register form */
+		return 1;
 
 	case INS_PUSH:
 	case INS_POP:
@@ -1348,9 +1034,11 @@ int estimate_text_size(InstructionType ins)
 
 	case INS_XOR:
 		return 2;
+
 	case INS_JMP:
 	case INS_CALL:
 		return 5;
+
 	case INS_JCC:
 		return 2;
 
@@ -1361,7 +1049,7 @@ int estimate_text_size(InstructionType ins)
 	case INS_SUB:
 	case INS_CMP:
 	case INS_LEA:
-		return 6;  
+		return 6;
 
 	default:
 		return 0;
@@ -1377,7 +1065,6 @@ void parse_operand(const char *s, Operand *op)
 	op->scale = 1;
 	op->has_disp = 0;
 
-	/* register */
 	RegCode r = get_register_code(s);
 	if (r != REG_INVALID)
 	{
@@ -1477,7 +1164,7 @@ void tokenize_line(FILE *fp)
 		{
 			strncpy(label, first.name, strlen(first.name) - 1);
 			label[strlen(first.name) - 1] = '\0';
-			first = get_next_token(line, &i); 
+			first = get_next_token(line, &i);
 		}
 
 		else if (first.type == T_IDENTIFIER)
@@ -1498,7 +1185,6 @@ void tokenize_line(FILE *fp)
 
 		TOKEN token = (first.type == T_DIRECTIVE || first.type == T_MNEMONIC) ? first : get_next_token(line, &i);
 
-		// ---- section directive ----
 		if (token.type == T_DIRECTIVE && get_directive_type(token.name) == DIR_SECTION)
 		{
 			TOKEN sec = get_next_token(line, &i);
@@ -1506,7 +1192,6 @@ void tokenize_line(FILE *fp)
 			continue;
 		}
 
-		// ---- .data section ----
 		if (current_section == SEC_DATA && token.type == T_DIRECTIVE)
 		{
 			DirectiveType d = get_directive_type(token.name);
@@ -1532,7 +1217,6 @@ void tokenize_line(FILE *fp)
 			lc_data += size;
 		}
 
-		// ---- .bss section ----
 		else if (current_section == SEC_BSS && token.type == T_DIRECTIVE)
 		{
 			DirectiveType d = get_directive_type(token.name);
@@ -1551,7 +1235,6 @@ void tokenize_line(FILE *fp)
 			lc_bss += size;
 		}
 
-		// ---- .text section ----
 		else if (current_section == SEC_TEXT)
 		{
 			if (token.type == T_MNEMONIC)
@@ -1568,7 +1251,6 @@ void tokenize_line(FILE *fp)
 				strncpy(ir->src_line, line, sizeof(ir->src_line) - 1);
 				ir->src_line[sizeof(ir->src_line) - 1] = '\0';
 
-				// parse operands
 				TOKEN t1 = get_next_token(line, &i);
 				TOKEN t2 = get_next_token(line, &i);
 
@@ -1613,7 +1295,7 @@ int emit_data(FILE *fp, uint8_t *data)
 
 		printf("; %s at %u (%d bytes)\n", symtab[i].name, symtab[i].addr, symtab[i].size);
 
-		fseek(fp, 0, SEEK_SET); 
+		fseek(fp, 0, SEEK_SET);
 		char line[2000];
 
 		while (fgets(line, sizeof(line), fp))
@@ -1675,7 +1357,7 @@ int emit_data(FILE *fp, uint8_t *data)
 									data[pc++] = line[j];
 								j++;
 							}
-							j++; 
+							j++;
 						}
 						else if (isdigit(line[j]) || line[j] == '-' || line[j] == '+')
 						{
@@ -1775,12 +1457,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	tokenize_line(fp); // pass 1: build IR & symbol table
+	tokenize_line(fp);
 	rewind(fp);
 	uint8_t text[8192];
 	uint8_t data[8192];
 	int data_size = emit_data(fp, data);
-	// output .data bytes
 	printf("Data section bytes (%d):\n", data_size);
 	for (int k = 0; k < data_size; k++)
 		printf("%02X ", data[k]);
@@ -1793,19 +1474,16 @@ int main(int argc, char *argv[])
 		printf("%02X ", text[k]);
 	if (text_size > 0) printf("\n");
 
-	/* ---- pass 3: insert every source line not already in the listing ---- */
 	rewind(fp);
 	{
 		char raw[2000];
 		int ln = 1;
 		while (fgets(raw, sizeof(raw), fp))
 		{
-			/* strip trailing newline for display */
 			int rlen = (int)strlen(raw);
 			if (rlen > 0 && raw[rlen - 1] == '\n')
 				raw[rlen - 1] = '\0';
 
-			/* check if this line number already has an entry */
 			int found = 0;
 			for (int k = 0; k < lst_count; k++)
 				if (lst[k].line_no == ln) { found = 1; break; }
@@ -1817,7 +1495,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	/* sort listing by line number (insertion sort — lst is small) */
 	for (int a = 1; a < lst_count; a++)
 	{
 		LstEntry tmp = lst[a];
